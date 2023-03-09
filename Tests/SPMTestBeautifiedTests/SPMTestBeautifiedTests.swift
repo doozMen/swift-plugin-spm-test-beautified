@@ -1,5 +1,5 @@
-import XCTest
 import FooLib
+import XCTest
 
 final class SPMTestBeautifiedTests: XCTestCase {
   func testFail() {
@@ -16,7 +16,10 @@ final class SPMTestBeautifiedTests: XCTestCase {
     XCTAssertEqual(true, true)
   }
 
-  func testSomething_skipped() {
+  func testBar() {
+    XCTFail("This fail should not be reported when filtered")
+  }
+  func testExtended() {
     XCTFail("This fail should not be reported when filtered")
   }
 }

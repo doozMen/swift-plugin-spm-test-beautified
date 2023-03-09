@@ -84,9 +84,17 @@ struct SPMTestBeautified: CommandPlugin {
 
       print("Start testing ...")
       // have to disable code coverage for now as it randomly fails complaining a file does not exist
-      let result = try packageManager.test(.filtered(["^((?!_skipped).)*$"]), parameters: .init(enableCodeCoverage: false))
-      guard result.succeeded(excluding: exclude) else {
-        let result = showAll ? result.all() : result.stripSuccesses(excluding: exclude)
+      var result: PackagePlugin.PackageManager.TestResult!
+      if exclude.isEmpty {
+        result = try packageManager.test(.all, parameters: .init(enableCodeCoverage: false))
+      } else {
+        let filter = "^((?!\(exclude.joined(separator: "|"))).)*$"
+        print(filter)
+        result = try packageManager.test(.filtered([filter]), parameters: .init(enableCodeCoverage: false))
+      }
+
+      guard result.succeeded else {
+        let result = showAll ? result.all() : result.stripSuccesses()
         try showJsonOrResult(json, result)
         throw Error.failedTests
       }
@@ -108,15 +116,6 @@ extension PackagePlugin.PackageManager.TestResult.TestTarget {
 }
 
 extension PackagePlugin.PackageManager.TestResult {
-
-  func succeeded(excluding skipped: [String]) -> Bool {
-    let fails = stripSuccesses()
-    return fails.testTargets
-      .flatMap { $0.testCases }
-      .flatMap { $0.tests }
-      .filter { !skipped.contains($0.name) }
-      .isEmpty
-  }
 
   func all() -> TestResult {
     let testTargets = testTargets
@@ -140,13 +139,13 @@ extension PackagePlugin.PackageManager.TestResult {
       codeCoverageDataFile: codeCoverageDataFile?.string)
   }
 
-  func stripSuccesses(excluding: [String] = []) -> TestResult {
+  func stripSuccesses() -> TestResult {
     let failedTestTargets = self.testTargets
       .filter { $0.containsFailedTests }
       .compactMap { testTarget -> TestResult.TestTarget? in
         let failedTestCases = testTarget.testCases
           .filter {
-            $0.tests.contains { $0.result == .failed && !excluding.contains($0.name) }
+            $0.tests.contains { $0.result == .failed }
           }
         guard !failedTestCases.isEmpty else {
           return nil
