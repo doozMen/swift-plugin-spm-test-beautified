@@ -16,8 +16,9 @@ let package = Package(
                     .custom(
                         verb: "spm-test-beautified",
                         description: "Holds all test output until the end. Then lists failed tests only"))),
+        .target(name: "FooLib"),
         .testTarget(
             name: "SPMTestBeautifiedTests",
-            dependencies: []),
+            dependencies: ["FooLib"]),
     ]
 )

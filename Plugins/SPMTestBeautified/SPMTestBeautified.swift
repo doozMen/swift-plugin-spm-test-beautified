@@ -4,7 +4,7 @@ import PackagePlugin
 @main
 struct SPMTestBeautified: CommandPlugin {
   enum Error: Swift.Error {
-    case failed
+    case failedTests, buildFailed
   }
 
   func performCommand(context: PackagePlugin.PluginContext, arguments: [String]) async throws {
@@ -28,7 +28,7 @@ struct SPMTestBeautified: CommandPlugin {
             --help, --h
             --show-all                Shows tests including succeeded
             --json                    Output in pretty printed json
-            --exclude                 [has to be last!] Space separated list of test names to exclude from succedded skip
+            --exclude                 [has to be last!] Space separated list of test names to exclude running
             """)
       return
     }
@@ -43,7 +43,7 @@ struct SPMTestBeautified: CommandPlugin {
       """)
     }
 
-    let watchdog = Task {
+    let watchdog = Task.detached {
       var count: UInt32 = 0
       let seconds: UInt32 = 10
       while !Task.isCancelled {
@@ -53,7 +53,7 @@ struct SPMTestBeautified: CommandPlugin {
       }
     }
 
-    try await runAllTests(on: packageManager, showAll: showAll, json: json, exclude: exclude, watchdog: watchdog).value
+    try await runAllTests(in: context, showAll: showAll, json: json, exclude: exclude, watchdog: watchdog).value
   }
 
   fileprivate func showJsonOrResult(_ json: Bool, _ result: TestResult) throws {
@@ -66,14 +66,36 @@ struct SPMTestBeautified: CommandPlugin {
     }
   }
 
-  private func runAllTests(on packageManager: PackageManager, showAll: Bool, json: Bool, exclude: [String], watchdog: Task<Void, Never>) -> Task<Void, Swift.Error> {
+  private func runAllTests(in context: PackagePlugin.PluginContext, showAll: Bool, json: Bool, exclude: [String], watchdog: Task<Void, Never>) -> Task<Void, Swift.Error> {
     Task {
       defer { watchdog.cancel() }
-      let result = try packageManager.test(.all, parameters: .init(enableCodeCoverage: true))
-      guard result.succeeded(excluding: exclude) else {
-        let result = showAll ? result.all() : result.stripSuccesses(excluding: exclude)
+      let targets = context.package.targets.map { $0.name }.joined(separator: ", ")
+
+      print("Building before testing [\(targets)] ...")
+      let buildResult = try packageManager.build(.all(includingTests: true), parameters: .init(configuration: .debug))
+      guard buildResult.succeeded else {
+        print("❌ Building failed - dumping logtext")
+        print("--- build log ---")
+        print(buildResult.logText)
+        print("--- build log ---")
+        throw Error.buildFailed
+      }
+      print("✅ Did build [\(targets)]")
+
+      print("Start testing ...")
+      // have to disable code coverage for now as it randomly fails complaining a file does not exist
+      var result: PackagePlugin.PackageManager.TestResult!
+      if exclude.isEmpty {
+        result = try packageManager.test(.all, parameters: .init(enableCodeCoverage: false))
+      } else {
+        let filter = "^((?!\(exclude.joined(separator: "|"))).)*$"
+        result = try packageManager.test(.filtered([filter]), parameters: .init(enableCodeCoverage: false))
+      }
+
+      guard result.succeeded else {
+        let result = showAll ? result.all() : result.stripSuccesses()
         try showJsonOrResult(json, result)
-        throw Error.failed
+        throw Error.failedTests
       }
       if showAll {
         try showJsonOrResult(json, result.all())
@@ -93,15 +115,6 @@ extension PackagePlugin.PackageManager.TestResult.TestTarget {
 }
 
 extension PackagePlugin.PackageManager.TestResult {
-
-  func succeeded(excluding skipped: [String]) -> Bool {
-    let fails = stripSuccesses()
-    return fails.testTargets
-      .flatMap { $0.testCases }
-      .flatMap { $0.tests }
-      .filter { !skipped.contains($0.name) }
-      .isEmpty
-  }
 
   func all() -> TestResult {
     let testTargets = testTargets
@@ -125,13 +138,13 @@ extension PackagePlugin.PackageManager.TestResult {
       codeCoverageDataFile: codeCoverageDataFile?.string)
   }
 
-  func stripSuccesses(excluding: [String] = []) -> TestResult {
+  func stripSuccesses() -> TestResult {
     let failedTestTargets = self.testTargets
       .filter { $0.containsFailedTests }
       .compactMap { testTarget -> TestResult.TestTarget? in
         let failedTestCases = testTarget.testCases
           .filter {
-            $0.tests.contains { $0.result == .failed && !excluding.contains($0.name) }
+            $0.tests.contains { $0.result == .failed }
           }
         guard !failedTestCases.isEmpty else {
           return nil
